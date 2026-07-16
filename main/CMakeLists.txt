@@ -1,11 +1,17 @@
+# IDF v4.1 style
+set(COMPONENT_SRCS
+    "main.c"
+    "dns_sniffer.c"
+    "web_server.c"
+    "wifi_manager.c"
+)
+
+set(COMPONENT_ADD_INCLUDEDIRS ".")
+
+# Register component
 idf_component_register(
-    SRCS 
-        "main.c"
-        "dns_sniffer.c"
-        "web_server.c"
-        "wifi_manager.c"
-    INCLUDE_DIRS 
-        "."
+    SRCS ${COMPONENT_SRCS}
+    INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
     REQUIRES 
         nvs_flash
         esp_wifi
@@ -14,5 +20,6 @@ idf_component_register(
         esp_http_server
         lwip
         esp_timer
-        cJSON
 )
+
+# cJSON được tích hợp sẵn trong IDF v4.1
