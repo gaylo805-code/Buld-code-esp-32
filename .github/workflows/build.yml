@@ -14,10 +14,20 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Build with ESP-IDF
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+
+      - name: Create venv
+        run: |
+          python3.8 -m venv esp-idf-venv
+          echo "$PWD/esp-idf-venv/bin" >> $GITHUB_PATH
+
+      - name: Build with ESP-IDF v4.1
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.3
+          esp_idf_version: v4.1
           target: esp32
           path: '.'
 
