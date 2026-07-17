@@ -1,42 +1,449 @@
-name: Build ESP-IDF Project
+name: ESP32 DNS Sniffer - IDF v4.1 Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'assets/**'
+      - 'images/**'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'ESP32 Target Chip'
+        required: true
+        default: 'esp32'
+        type: choice
+        options:
+          - esp32
+          - esp32s2
+          - esp32s3
+          - esp32c3
+
+env:
+  IDF_VERSION: v4.1
+  PYTHON_VERSION: '3.8'
+  TARGET_CHIP: ${{ github.event.inputs.target || 'esp32' }}
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  # Build firmware với ESP-IDF v4.1
+  build-firmware:
+    name: 🏗️ Build với IDF ${{ env.IDF_VERSION }}
+    runs-on: ubuntu-20.04  # Ubuntu 20.04 hỗ trợ Python 3.8 tốt nhất
+    
+    strategy:
+      matrix:
+        target: [esp32]
+        idf_commit: [v4.1]  # Có thể thêm v4.1.1, v4.1.2
+    
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Set up Python 3.8
-        uses: actions/setup-python@v5
+      - name: 🐍 Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: 'x64'
+
+      - name: 🔍 Kiểm tra Python version
+        run: |
+          python3 --version
+          pip3 --version
+          echo "Python path: $(which python3)"
+
+      - name: 📦 Cài đặt Python packages cần thiết
+        run: |
+          pip3 install --upgrade pip setuptools wheel
+          pip3 install --user \
+            pyparsing==2.4.7 \
+            idf-component-manager==1.1.0 \
+            esptool==3.0 \
+            pyserial==3.5 \
+            future==0.18.2 \
+            cryptography==3.3.2 \
+            pyyaml==5.4.1 \
+            jinja2==2.11.3
+
+      - name: 📚 Cache ESP-IDF
+        id: cache-idf
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/esp-idf
+            ~/.espressif
+          key: ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-
+
+      - name: 🔧 Cài đặt ESP-IDF v4.1
+        if: steps.cache-idf.outputs.cache-hit != 'true'
+        run: |
+          echo "🔄 Đang cài đặt ESP-IDF v4.1..."
+          mkdir -p ~/esp
+          cd ~/esp
+          
+          # Clone ESP-IDF v4.1
+          git clone --branch v4.1 --recursive --depth 1 \
+            https://github.com/espressif/esp-idf.git
+          
+          cd esp-idf
+          
+          # Cài đặt tools cho ESP32
+          ./install.sh esp32
+          
+          echo "✅ ESP-IDF v4.1 đã được cài đặt"
+
+      - name: 🔄 Setup ESP-IDF environment
+        run: |
+          echo "🔧 Thiết lập môi trường ESP-IDF..."
+          export IDF_PATH="$HOME/esp/esp-idf"
+          echo "IDF_PATH=$IDF_PATH" >> $GITHUB_ENV
+          
+          # Source export.sh
+          . $IDF_PATH/export.sh
+          
+          # Kiểm tra version
+          idf.py --version
+          echo "✅ IDF Version: $(idf.py --version)"
+
+      - name: ⚙️ Tạo sdkconfig.defaults cho ESP32
+        run: |
+          cat > sdkconfig.defaults << 'EOF'
+          # WiFi Configuration
+          CONFIG_ESP_WIFI_SSID="DNS_Sniffer_Pro"
+          CONFIG_ESP_WIFI_PASSWORD="dns12345678"
+          CONFIG_ESP_MAXIMUM_RETRY=5
+          CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+          
+          # LWIP Configuration
+          CONFIG_LWIP_MAX_SOCKETS=16
+          CONFIG_LWIP_DNS_MAX_SERVERS=3
+          
+          # HTTP Server Configuration
+          CONFIG_HTTPD_MAX_REQ_HDR_LEN=512
+          CONFIG_HTTPD_MAX_URI_LEN=512
+          CONFIG_HTTPD_ERR_RESP_NO_DELAY=y
+          
+          # FreeRTOS Configuration
+          CONFIG_FREERTOS_HZ=1000
+          CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+          CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048
+          
+          # Memory Configuration
+          CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+          CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+          
+          # Debug Configuration
+          CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+          CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
+          
+          # Partition Table
+          CONFIG_PARTITION_TABLE_CUSTOM=y
+          CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+          
+          # Compiler Options
+          CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+          CONFIG_COMPILER_CXX_EXCEPTIONS=n
+          CONFIG_COMPILER_STACK_CHECK_MODE_NONE=y
+          EOF
+          
+          echo "✅ Đã tạo sdkconfig.defaults"
+
+      - name: 📝 Kiểm tra CMakeLists.txt
+        run: |
+          echo "🔍 Kiểm tra cấu trúc dự án..."
+          
+          # Kiểm tra file CMakeLists.txt
+          if [ ! -f "CMakeLists.txt" ]; then
+            echo "❌ Thiếu CMakeLists.txt ở thư mục gốc!"
+            exit 1
+          fi
+          
+          if [ ! -f "main/CMakeLists.txt" ]; then
+            echo "❌ Thiếu main/CMakeLists.txt!"
+            exit 1
+          fi
+          
+          echo "✅ Cấu trúc dự án hợp lệ"
+
+      - name: 🎯 Set target và Build
+        run: |
+          . $HOME/esp/esp-idf/export.sh
+          
+          echo "🎯 Target: ${{ env.TARGET_CHIP }}"
+          idf.py set-target ${{ env.TARGET_CHIP }}
+          
+          echo "🏗️ Bắt đầu build..."
+          idf.py build 2>&1 | tee build.log
+          
+          # Kiểm tra kết quả build
+          if [ $? -eq 0 ]; then
+            echo "✅ Build thành công!"
+          else
+            echo "❌ Build thất bại!"
+            exit 1
+          fi
+
+      - name: 📊 Phân tích kích thước firmware
+        run: |
+          . $HOME/esp/esp-idf/export.sh
+          
+          echo "📊 Phân tích kích thước firmware..."
+          idf.py size
+          idf.py size-components > size_components.txt
+          idf.py size-files > size_files.txt
+          
+          echo "📦 Kích thước các file bin:"
+          ls -lh build/*.bin
+
+      - name: 📤 Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ env.TARGET_CHIP }}-idf${{ env.IDF_VERSION }}
+          path: |
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/*.bin
+            build/*.elf
+            build/*.map
+            build/flash_project_args
+            build/config/sdkconfig.h
+            build.log
+          retention-days: 30
+
+      - name: 📤 Upload size reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report-${{ env.TARGET_CHIP }}
+          path: |
+            size_components.txt
+            size_files.txt
+          retention-days: 30
+
+      - name: 🔍 Kiểm tra lỗi build
+        if: failure()
+        run: |
+          echo "🔍 Phân tích lỗi build..."
+          if [ -f build.log ]; then
+            echo "📋 Log cuối cùng:"
+            tail -n 50 build.log
+            
+            echo "🔍 Tìm lỗi trong log:"
+            grep -i "error" build.log || echo "Không tìm thấy lỗi cụ thể"
+          fi
+
+  # Build cho nhiều targets (chạy song song)
+  build-all-targets:
+    name: 🎯 Build All Targets (IDF v4.1)
+    runs-on: ubuntu-20.04
+    needs: build-firmware
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    
+    strategy:
+      matrix:
+        target: [esp32, esp32s2, esp32s3, esp32c3]
+      fail-fast: false
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 🐍 Setup Python 3.8
+        uses: actions/setup-python@v4
         with:
           python-version: '3.8'
 
-      - name: Create venv
+      - name: 📦 Cài đặt dependencies
         run: |
-          python3.8 -m venv esp-idf-venv
-          echo "$PWD/esp-idf-venv/bin" >> $GITHUB_PATH
+          pip3 install --upgrade pip
+          pip3 install --user pyparsing==2.4.7 cryptography==3.3.2
 
-      - name: Build with ESP-IDF v4.1
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v4.1
-          target: esp32
-          path: '.'
+      - name: 🔧 Setup ESP-IDF v4.1
+        run: |
+          mkdir -p ~/esp
+          cd ~/esp
+          
+          if [ ! -d "esp-idf" ]; then
+            git clone --branch v4.1 --recursive --depth 1 \
+              https://github.com/espressif/esp-idf.git
+            cd esp-idf
+            ./install.sh all
+          fi
 
-      - name: Upload build artifacts
+      - name: 🏗️ Build for ${{ matrix.target }}
+        run: |
+          . ~/esp/esp-idf/export.sh
+          idf.py set-target ${{ matrix.target }}
+          idf.py build
+
+      - name: 📤 Upload ${{ matrix.target }} firmware
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: firmware-${{ matrix.target }}-idfv4.1
           path: |
-            build/*.bin
-            build/*.elf
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
+            build/*.bin
+          retention-days: 30
+
+  # Test với Python 3.8
+  test-python:
+    name: 🧪 Python 3.8 Tests
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.8
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+
+      - name: 🧪 Test Python scripts
+        run: |
+          python3 --version
+          
+          # Test các Python scripts nếu có
+          for file in $(find . -name "*.py" -type f); do
+            echo "🔍 Kiểm tra syntax: $file"
+            python3 -m py_compile "$file"
+          done
+          
+          echo "✅ Python tests hoàn thành"
+
+  # Tạo release package
+  create-release:
+    name: 📦 Create Release Package
+    needs: [build-firmware, build-all-targets]
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: 📥 Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release/
+
+      - name: 📦 Tạo release packages
+        run: |
+          cd release
+          
+          # Tạo thư mục release
+          mkdir -p DNS_Sniffer_Pro_IDFv4.1
+          
+          # Copy firmware
+          for dir in firmware-*; do
+            if [ -d "$dir" ]; then
+              target_name=$(echo "$dir" | sed 's/firmware-//')
+              mkdir -p "DNS_Sniffer_Pro_IDFv4.1/$target_name"
+              cp -r "$dir"/* "DNS_Sniffer_Pro_IDFv4.1/$target_name/"
+            fi
+          done
+          
+          # Tạo file flash script
+          cat > DNS_Sniffer_Pro_IDFv4.1/flash_esp32.sh << 'SCRIPT'
+          #!/bin/bash
+          ESP_PORT=${1:-/dev/ttyUSB0}
+          ESP_CHIP=${2:-esp32}
+          
+          echo "🔥 Flashing DNS Sniffer Pro..."
+          echo "📱 Port: $ESP_PORT"
+          echo "💾 Chip: $ESP_CHIP"
+          
+          esptool.py --chip $ESP_CHIP --port $ESP_PORT \
+            --baud 460800 write_flash \
+            --flash_mode dio \
+            --flash_size detect \
+            0x1000 bootloader/bootloader.bin \
+            0x8000 partition_table/partition-table.bin \
+            0x10000 dns_sniffer.bin
+          
+          echo "✅ Flash hoàn thành!"
+          SCRIPT
+          
+          chmod +x DNS_Sniffer_Pro_IDFv4.1/flash_esp32.sh
+          
+          # Tạo ZIP
+          zip -r "DNS_Sniffer_Pro_IDFv4.1.zip" DNS_Sniffer_Pro_IDFv4.1/
+          
+          # Tạo checksums
+          sha256sum DNS_Sniffer_Pro_IDFv4.1.zip > DNS_Sniffer_Pro_IDFv4.1.sha256
+          md5sum DNS_Sniffer_Pro_IDFv4.1.zip > DNS_Sniffer_Pro_IDFv4.1.md5
+
+      - name: 📝 Tạo release notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          # 🔍 DNS Sniffer Pro - ESP32 (IDF v4.1)
+          
+          ## 📦 Firmware Information
+          - **IDF Version:** v4.1
+          - **Python Version:** 3.8
+          - **Build Date:** $(date +"%Y-%m-%d %H:%M:%S")
+          
+          ## 🚀 Supported Chips
+          - ESP32
+          - ESP32-S2
+          - ESP32-S3
+          - ESP32-C3
+          
+          ## 📥 Installation
+          ```bash
+          # Flash firmware
+          esptool.py --chip esp32 write_flash 0x0 firmware.bin
+          
+          # Hoặc sử dụng script
+          ./flash_esp32.sh /dev/ttyUSB0 esp32
+          ```
+          
+          ## 🔧 Configuration
+          - **WiFi SSID:** DNS_Sniffer_Pro
+          - **Password:** dns12345678
+          - **Web UI:** http://192.168.4.1
+          
+          ## ✨ Features
+          - ✅ DNS Packet Capture
+          - ✅ Web Interface
+          - ✅ Domain Blocking
+          - ✅ Real-time Statistics
+          - ✅ JSON Export
+          
+          ## 📊 Checksums
+          - SHA256: See .sha256 file
+          - MD5: See .md5 file
+          EOF
+
+      - name: 🚀 Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release/DNS_Sniffer_Pro_IDFv4.1.zip
+            release/DNS_Sniffer_Pro_IDFv4.1.sha256
+            release/DNS_Sniffer_Pro_IDFv4.1.md5
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Cleanup old artifacts
+  cleanup:
+    name: 🧹 Cleanup Old Artifacts
+    needs: [build-firmware, build-all-targets]
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: 🗑️ Delete old artifacts
+        uses: actions/delete-artifacts@v1
+        with:
+          age: '30 days'
